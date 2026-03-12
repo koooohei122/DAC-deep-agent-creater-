@@ -402,6 +402,175 @@ canvas { display: block; max-width: 100%; }
 .about-item p  { font-size: .82rem; color: var(--text2); line-height: 1.6; }
 
 /* ============================================================
+   Workflow hint bar
+   ============================================================ */
+.workflow-hint {
+  background: rgba(88,166,255,.07);
+  border-top: 1px solid rgba(88,166,255,.2);
+  padding: .3rem 1.5rem;
+  font-size: .82rem; color: var(--text2);
+  text-align: center;
+  transition: background .3s;
+}
+.workflow-hint.done { background: rgba(126,231,135,.07); border-top-color: rgba(126,231,135,.25); color: var(--accent2); }
+
+/* ============================================================
+   Step indicator on tabs
+   ============================================================ */
+.step-num {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; border-radius: 50%;
+  background: var(--bg3); border: 1px solid var(--border);
+  font-size: .7rem; font-weight: 700; margin-right: .3rem;
+  vertical-align: middle; line-height: 1;
+}
+.tab.active .step-num { background: rgba(255,255,255,.25); border-color: transparent; }
+.tab:disabled, .tab[disabled] {
+  opacity: .35; cursor: not-allowed; pointer-events: none;
+}
+.step-done {
+  color: var(--accent2); margin-left: .25rem;
+  font-size: .72rem; vertical-align: middle;
+}
+
+/* ============================================================
+   Empty states
+   ============================================================ */
+.empty-state {
+  text-align: center; padding: 1.5rem .5rem;
+  color: var(--text2);
+}
+.empty-icon { font-size: 2rem; margin-bottom: .4rem; opacity: .6; }
+.empty-state p { font-size: .875rem; }
+.empty-state .hint { font-size: .78rem; color: var(--text3); margin-top: .3rem; }
+
+/* ============================================================
+   Data preview table
+   ============================================================ */
+.preview-tbl { font-size: .78rem; }
+.preview-tbl td { font-family: monospace; }
+.preview-tbl td.null-cell { color: var(--text3); font-style: italic; }
+.badge-secondary {
+  background: var(--bg3); border: 1px solid var(--border);
+  border-radius: 9999px; padding: .15rem .6rem;
+  font-size: .75rem; color: var(--text2);
+}
+
+/* ============================================================
+   Auto-config banner
+   ============================================================ */
+.autoconfig-banner {
+  display: flex; align-items: flex-start; gap: .7rem;
+  background: rgba(88,166,255,.08);
+  border: 1px solid rgba(88,166,255,.3);
+  border-radius: 8px; padding: .7rem 1rem;
+  margin-bottom: .9rem;
+}
+.autoconfig-icon { font-size: 1.2rem; flex-shrink: 0; }
+.autoconfig-text { font-size: .82rem; line-height: 1.5; }
+.autoconfig-text strong { display: block; color: var(--accent); margin-bottom: .15rem; }
+.autoconfig-text span { color: var(--text2); }
+
+/* ============================================================
+   Sub-title row with button
+   ============================================================ */
+.sub-title-row {
+  display: flex; align-items: center;
+  justify-content: space-between; margin-bottom: .75rem;
+}
+.sub-title-row .sub-title { margin-bottom: 0; }
+.btn-sm { padding: .3rem .75rem; font-size: .78rem; }
+
+/* ============================================================
+   Task type hint
+   ============================================================ */
+.task-hint {
+  padding: .5rem .9rem;
+  border-radius: 6px; font-size: .82rem;
+  margin-bottom: .75rem;
+}
+.task-hint.regression  { background: rgba(88,166,255,.1);  color: var(--accent);  border: 1px solid rgba(88,166,255,.3); }
+.task-hint.binary      { background: rgba(126,231,135,.1); color: var(--accent2); border: 1px solid rgba(126,231,135,.3); }
+.task-hint.multiclass  { background: rgba(210,153,34,.1);  color: var(--warn);    border: 1px solid rgba(210,153,34,.3); }
+
+/* ============================================================
+   Training metrics live display
+   ============================================================ */
+.train-status-row {
+  display: flex; align-items: center; gap: .6rem;
+  margin-top: .35rem;
+}
+.train-metrics {
+  display: grid; grid-template-columns: repeat(3, 1fr);
+  gap: .4rem; margin-top: .5rem;
+}
+.metric-chip {
+  background: var(--bg3); border: 1px solid var(--border);
+  border-radius: 6px; padding: .3rem .5rem; text-align: center;
+}
+.metric-chip .metric-label { font-size: .68rem; color: var(--text3); text-transform: uppercase; }
+.metric-chip .metric-value { font-size: .9rem; font-weight: 700; color: var(--text); font-family: monospace; }
+
+/* Health badges */
+.health-badge {
+  padding: .15rem .55rem; border-radius: 4px;
+  font-size: .75rem; font-weight: 700; display: inline-block;
+}
+.health-badge.good    { background: rgba(126,231,135,.15); color: var(--accent2); }
+.health-badge.warn    { background: rgba(210,153,34,.15);  color: var(--warn); }
+.health-badge.danger  { background: rgba(248,81,73,.15);   color: var(--danger); }
+
+/* ============================================================
+   Inline tooltip
+   ============================================================ */
+.info-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px;
+  background: none; border: 1px solid var(--border);
+  color: var(--text2); border-radius: 50%;
+  font-size: .65rem; cursor: pointer;
+  margin-left: .3rem; vertical-align: middle;
+  transition: border-color .15s, color .15s;
+}
+.info-icon:hover { border-color: var(--accent); color: var(--accent); }
+
+.inline-tooltip {
+  position: fixed; z-index: 500;
+  max-width: 340px; width: 92vw;
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 1rem 1rem .8rem;
+  box-shadow: var(--shadow); font-size: .85rem;
+}
+.tooltip-close {
+  position: absolute; top: .5rem; right: .6rem;
+  background: none; border: none; color: var(--text2);
+  cursor: pointer; font-size: .9rem; padding: .2rem .4rem;
+}
+.tooltip-close:hover { color: var(--text); }
+.tooltip-body { line-height: 1.7; color: var(--text2); }
+.tooltip-body strong { color: var(--accent); }
+.tooltip-body code   { background: var(--bg3); padding: .1rem .3rem; border-radius: 3px; font-family: monospace; }
+
+/* ============================================================
+   CTA bar
+   ============================================================ */
+.cta-bar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: .75rem 1rem; margin-top: 1rem;
+  background: rgba(126,231,135,.08);
+  border: 1px solid rgba(126,231,135,.3);
+  border-radius: 8px; font-size: .875rem; color: var(--accent2);
+}
+
+/* label hint */
+.label-hint { font-size: .75rem; color: var(--text3); margin-left: .5rem; font-weight: 400; }
+
+/* ============================================================
+   Explain right card
+   ============================================================ */
+.explain-right-card { min-height: 320px; }
+
+/* ============================================================
    Utility
    ============================================================ */
 .empty-hint { color: var(--text3); font-size: .875rem; padding: .5rem 0; }

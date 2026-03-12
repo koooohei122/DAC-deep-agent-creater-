@@ -1,6 +1,6 @@
 /* ============================================================
-   DAC Local AI - Frontend Application
-   Pure Vanilla JS, no frameworks or external libraries
+   DAC Local AI - Frontend Application  (v2 - intuitive UX)
+   Vanilla JS, no external libraries
    ============================================================ */
 
 'use strict';
@@ -9,25 +9,49 @@
 // State
 // ================================================================
 const state = {
-  datasets: {},          // id -> dataset info
-  sessions: {},          // id -> session info
+  datasets: {},
+  sessions: {},
   activeDataset: null,
   activeSession: null,
-  trainSSE: null,        // EventSource for live training
+  trainSSE: null,
 };
 
 // ================================================================
-// Tab navigation
+// Tab navigation with step locking
 // ================================================================
+function switchTab(tabName) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(s => s.classList.remove('active'));
+  const btn = document.querySelector(`[data-tab="${tabName}"]`);
+  if (btn) btn.classList.add('active');
+  const section = document.getElementById(`tab-${tabName}`);
+  if (section) section.classList.add('active');
+  if (tabName === 'preview') refreshPreview();
+  if (tabName === 'predict') refreshPredictSessionList();
+}
+
+function unlockTab(tabName) {
+  const btn = document.querySelector(`[data-tab="${tabName}"]`);
+  if (btn) {
+    btn.removeAttribute('disabled');
+    btn.querySelector('.step-done')?.classList.remove('hidden');
+  }
+}
+
+function markTabDone(tabName) {
+  const btn = document.querySelector(`[data-tab="${tabName}"]`);
+  btn?.querySelector('.step-done')?.classList.remove('hidden');
+}
+
+function setHint(msg, done = false) {
+  document.getElementById('hint-text').textContent = msg;
+  document.getElementById('workflow-hint').classList.toggle('done', done);
+}
+
 document.querySelectorAll('.tab').forEach(btn => {
   btn.addEventListener('click', () => {
-    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-    document.querySelectorAll('.tab-content').forEach(s => s.classList.remove('active'));
-    btn.classList.add('active');
-    document.getElementById(`tab-${btn.dataset.tab}`).classList.add('active');
-
-    if (btn.dataset.tab === 'preview') refreshPreview();
-    if (btn.dataset.tab === 'predict') refreshPredictSessionList();
+    if (btn.disabled || btn.getAttribute('disabled') !== null) return;
+    switchTab(btn.dataset.tab);
   });
 });
 
@@ -36,7 +60,6 @@ document.querySelectorAll('.tab').forEach(btn => {
 // ================================================================
 const dropZone   = document.getElementById('drop-zone');
 const fileInput  = document.getElementById('file-input');
-const uploadStat = document.getElementById('upload-status');
 
 dropZone.addEventListener('dragover',  e => { e.preventDefault(); dropZone.classList.add('over'); });
 dropZone.addEventListener('dragleave', () => dropZone.classList.remove('over'));
@@ -51,9 +74,8 @@ fileInput.addEventListener('change', () => {
 });
 
 async function uploadFile(file) {
-  if (!file.name.endsWith('.csv')) {
-    showStatus('upload-status', '❌ CSVファイルのみ対応しています', 'error');
-    return;
+  if (!file.name.toLowerCase().endsWith('.csv')) {
+    showStatus('upload-status', '❌ CSVファイルのみ対応しています', 'error'); return;
   }
   showStatus('upload-status', '⏳ アップロード中…', '');
   const fd = new FormData();
@@ -65,10 +87,15 @@ async function uploadFile(file) {
     const { dataset_id, filename, analysis } = json.data;
     state.datasets[dataset_id] = { id: dataset_id, filename, analysis };
     state.activeDataset = dataset_id;
-    showStatus('upload-status', `✅ ${filename} をアップロードしました (${analysis.rows} 行, ${analysis.columns} 列)`, 'success');
+    showStatus('upload-status',
+      `✅ ${filename}  (${analysis.rows}行 × ${analysis.columns}列)`, 'success');
     renderDatasetList();
     renderAnalysis(dataset_id);
+    await fetchDataPreview(dataset_id);
     refreshTrainDatasets();
+    unlockTab('train');
+    markTabDone('upload');
+    setHint(`「${filename}」をアップロードしました。次は「学習」タブでモデルを設定してください →`);
   } catch (e) {
     showStatus('upload-status', `❌ ${e.message}`, 'error');
   }
@@ -86,40 +113,82 @@ function renderDatasetList() {
   list.innerHTML = '';
   const datasets = Object.values(state.datasets);
   if (!datasets.length) {
-    list.innerHTML = '<p class="empty-hint">まだデータがありません</p>';
+    list.innerHTML = `<div class="empty-state">
+      <div class="empty-icon">📋</div>
+      <p>まだデータがありません</p>
+      <p class="hint">左のゾーンにCSVをドロップするか<br>「ファイルを選択」をクリックしてください</p>
+    </div>`;
     return;
   }
   datasets.forEach(ds => {
     const item = document.createElement('div');
     item.className = `dataset-item${ds.id === state.activeDataset ? ' selected' : ''}`;
+    const hi = ds.analysis.high_priority || 0;
     item.innerHTML = `
       <div>
         <div class="dataset-name">📄 ${esc(ds.filename)}</div>
-        <div class="dataset-meta">${ds.analysis.rows} 行 × ${ds.analysis.columns} 列</div>
+        <div class="dataset-meta">${ds.analysis.rows}行 × ${ds.analysis.columns}列
+          ${hi > 0 ? `&nbsp;<span class="text-high">⚠ HIGH×${hi}</span>` : ''}
+        </div>
       </div>
-      <div class="dataset-meta">${ds.id}</div>`;
+      <button class="btn btn-primary btn-sm" style="flex-shrink:0">
+        学習タブへ →
+      </button>`;
+    item.querySelector('button').addEventListener('click', e => {
+      e.stopPropagation();
+      state.activeDataset = ds.id;
+      renderDatasetList();
+      unlockTab('train');
+      switchTab('train');
+      // Pre-select in train tab
+      const sel = document.getElementById('train-dataset');
+      sel.value = ds.id;
+      sel.dispatchEvent(new Event('change'));
+    });
     item.addEventListener('click', () => {
       state.activeDataset = ds.id;
       renderDatasetList();
       renderAnalysis(ds.id);
+      fetchDataPreview(ds.id);
     });
     list.appendChild(item);
   });
+}
+
+async function fetchDataPreview(did) {
+  try {
+    const res  = await fetch(`/api/dataset/preview?id=${did}`);
+    const json = await res.json();
+    if (!json.ok) return;
+    const { headers, rows, total } = json.data;
+    const section = document.getElementById('data-preview-section');
+    const caption = document.getElementById('preview-caption');
+    section.classList.remove('hidden');
+    caption.textContent = `最初 ${rows.length} 行 / 合計 ${total} 行`;
+
+    const tbl = document.getElementById('preview-table');
+    const thead = `<thead><tr>${headers.map(h => `<th>${esc(h)}</th>`).join('')}</tr></thead>`;
+    const tbody = `<tbody>${rows.map(row =>
+      `<tr>${row.map(v => {
+        const isEmpty = v === '' || v === null || v === undefined ||
+                        String(v).toLowerCase() === 'nan';
+        return `<td class="${isEmpty ? 'null-cell' : ''}">${isEmpty ? '—' : esc(String(v))}</td>`;
+      }).join('')}</tr>`
+    ).join('')}</tbody>`;
+    tbl.innerHTML = thead + tbody;
+  } catch {}
 }
 
 function renderAnalysis(did) {
   const ds = state.datasets[did];
   if (!ds) return;
   const a = ds.analysis;
-  const section = document.getElementById('analysis-section');
-  section.classList.remove('hidden');
-
+  document.getElementById('analysis-section').classList.remove('hidden');
   document.getElementById('analysis-meta').innerHTML =
     `${a.rows} 行 &nbsp;|&nbsp; ${a.columns} 列 &nbsp;|&nbsp;
      <span class="text-high">${a.high_priority} 件 HIGH</span> &nbsp;/&nbsp;
      ${a.total_issues} 件 合計`;
 
-  // Column table
   const tbody = document.getElementById('col-tbody');
   tbody.innerHTML = '';
   (a.column_summary || []).forEach(col => {
@@ -129,38 +198,46 @@ function renderAnalysis(did) {
       <td>${col.type}</td>
       <td>${col.nulls}</td>
       <td class="${col.null_rate !== '0.0%' ? 'text-medium' : ''}">${col.null_rate}</td>
-      <td>${col.min ?? '—'}</td>
-      <td>${col.max ?? '—'}</td>
+      <td>${col.min ?? '—'}</td><td>${col.max ?? '—'}</td>
       <td>${col.mean ?? (col.unique ?? '—')}</td>
       <td>${col.std ?? (col.samples ? col.samples.slice(0,3).join(', ') : '—')}</td>
       <td class="${col.outliers > 0 ? 'text-medium' : ''}">${col.outliers ?? '—'}</td>`;
     tbody.appendChild(tr);
   });
 
-  // Instructions
-  const instrSec  = document.getElementById('instructions-section');
-  const instrList = document.getElementById('instructions-list');
-  const instrCount= document.getElementById('instruction-count');
+  const instrCount = document.getElementById('instruction-count');
   instrCount.textContent = a.total_issues;
+  const instrList = document.getElementById('instructions-list');
   instrList.innerHTML = '';
-  if (!a.instructions || !a.instructions.length) {
-    instrSec.innerHTML += '<p class="empty-hint">問題は検出されませんでした 🎉</p>';
-    return;
+  if (!a.instructions?.length) {
+    instrList.innerHTML = '<p class="empty-hint">問題は検出されませんでした 🎉</p>';
+  } else {
+    a.instructions.forEach(inst => {
+      const div = document.createElement('div');
+      div.className = `instruction-item ${inst.priority}`;
+      div.innerHTML = `
+        <div class="instr-header">
+          <span class="priority-badge ${inst.priority}">${inst.priority}</span>
+          <span class="instr-col">${esc(inst.column)}</span>
+          <span class="instr-issue">— ${esc(inst.issue)}</span>
+        </div>
+        <div class="instr-action">🔧 ${esc(inst.action)}</div>
+        <div class="instr-why">💡 ${esc(inst.why)}</div>`;
+      instrList.appendChild(div);
+    });
   }
-  a.instructions.forEach(inst => {
-    const div = document.createElement('div');
-    div.className = `instruction-item ${inst.priority}`;
-    div.innerHTML = `
-      <div class="instr-header">
-        <span class="priority-badge ${inst.priority}">${inst.priority}</span>
-        <span class="instr-col">${esc(inst.column)}</span>
-        <span class="instr-issue">— ${esc(inst.issue)}</span>
-      </div>
-      <div class="instr-action">🔧 ${esc(inst.action)}</div>
-      <div class="instr-why">💡 ${esc(inst.why)}</div>`;
-    instrList.appendChild(div);
-  });
+  document.getElementById('goto-train-cta').classList.remove('hidden');
 }
+
+document.getElementById('btn-goto-train')?.addEventListener('click', () => {
+  unlockTab('train');
+  switchTab('train');
+  const sel = document.getElementById('train-dataset');
+  if (state.activeDataset) {
+    sel.value = state.activeDataset;
+    sel.dispatchEvent(new Event('change'));
+  }
+});
 
 // ================================================================
 // Train Tab
@@ -182,6 +259,8 @@ function refreshTrainDatasets() {
 trainDatasetSel.addEventListener('change', () => {
   const did = trainDatasetSel.value;
   trainTargetSel.innerHTML = '<option value="">-- 選択 --</option>';
+  document.getElementById('btn-autoconfig').disabled = true;
+  hideTaskHint();
   if (!did || !state.datasets[did]) return;
   const headers = state.datasets[did].analysis.headers || [];
   headers.forEach(h => {
@@ -189,57 +268,133 @@ trainDatasetSel.addEventListener('change', () => {
     opt.value = h; opt.textContent = h;
     trainTargetSel.appendChild(opt);
   });
-  // Guess target = last column
-  if (headers.length) trainTargetSel.value = headers[headers.length - 1];
+  if (headers.length) {
+    trainTargetSel.value = headers[headers.length - 1];
+    trainTargetSel.dispatchEvent(new Event('change'));
+  }
+});
 
-  // Show summary preview
+trainTargetSel.addEventListener('change', () => {
+  const did   = trainDatasetSel.value;
+  const target = trainTargetSel.value;
+  if (!did || !target) return;
+  document.getElementById('btn-autoconfig').disabled = false;
+  autoConfigFromTarget(did, target);
   renderModelSummaryPreview();
 });
 
+// Auto-detect task type from column stats
+function autoConfigFromTarget(did, target) {
+  const ds = state.datasets[did];
+  if (!ds) return;
+  const col = ds.analysis.column_summary?.find(c => c.name === target);
+  if (!col) return;
+
+  let taskClass = '', taskMsg = '';
+  if (col.type === '数値') {
+    setSelect('output-activation', 'linear');
+    setSelect('loss-fn', 'mse');
+    taskClass = 'regression';
+    taskMsg = '📊 回帰タスクとして自動設定しました（Linear出力 + MSE損失）';
+  } else if (col.unique <= 2) {
+    setSelect('output-activation', 'sigmoid');
+    setSelect('loss-fn', 'bce');
+    taskClass = 'binary';
+    taskMsg = '✅ 2値分類タスクとして自動設定しました（Sigmoid出力 + BCE損失）';
+  } else {
+    setSelect('output-activation', 'softmax');
+    setSelect('loss-fn', 'cross_entropy');
+    taskClass = 'multiclass';
+    taskMsg = `🎯 多クラス分類（${col.unique}クラス）として自動設定しました（Softmax出力 + CrossEntropy損失）`;
+  }
+  showTaskHint(taskClass, taskMsg);
+}
+
+function showTaskHint(cls, msg) {
+  const el = document.getElementById('task-hint');
+  el.className = `task-hint ${cls}`;
+  el.textContent = msg;
+  el.classList.remove('hidden');
+}
+function hideTaskHint() {
+  document.getElementById('task-hint').classList.add('hidden');
+}
+
+function setSelect(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.value = value;
+}
+
+// AI auto-config button
+document.getElementById('btn-autoconfig').addEventListener('click', async () => {
+  const did    = trainDatasetSel.value;
+  const target = trainTargetSel.value;
+  if (!did || !target) return;
+  try {
+    const res  = await fetch(`/api/autoconfig?id=${did}&target=${encodeURIComponent(target)}`);
+    const json = await res.json();
+    if (!json.ok) throw new Error(json.error);
+    const { config, reason } = json.data;
+    // Apply
+    document.getElementById('hidden-layers').value = config.hidden_layers.join(',');
+    setSelect('activation',        config.activation);
+    setSelect('output-activation', config.output_activation);
+    setSelect('loss-fn',           config.loss);
+    setSelect('optimizer',         config.optimizer);
+    document.getElementById('lr').value         = config.lr;
+    document.getElementById('epochs').value     = config.epochs;
+    document.getElementById('batch-size').value = config.batch_size;
+
+    const banner = document.getElementById('autoconfig-banner');
+    document.getElementById('autoconfig-title').textContent = `🤖 AIが設定を自動提案しました（${config.task_label}）`;
+    document.getElementById('autoconfig-reason').textContent = reason;
+    banner.classList.remove('hidden');
+    renderModelSummaryPreview();
+  } catch (e) {
+    alert(`自動設定エラー: ${e.message}`);
+  }
+});
+
+// Form change -> update summary
 ['hidden-layers','activation','output-activation','loss-fn','optimizer','lr','epochs','batch-size']
-  .forEach(id => document.getElementById(id).addEventListener('change', renderModelSummaryPreview));
+  .forEach(id => document.getElementById(id)?.addEventListener('change', renderModelSummaryPreview));
 
 function renderModelSummaryPreview() {
-  const did = trainDatasetSel.value;
-  if (!did || !state.datasets[did]) return;
-  const ds = state.datasets[did];
+  const did    = trainDatasetSel.value;
   const target = trainTargetSel.value;
-  if (!target) return;
-
+  if (!did || !state.datasets[did] || !target) return;
+  const ds = state.datasets[did];
   const headers  = ds.analysis.headers || [];
   const features = headers.filter(h => h !== target);
   const inSize   = features.length;
   const outSize  = 1;
-
   const hiddenStr = document.getElementById('hidden-layers').value;
   const hidden = hiddenStr.split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n) && n > 0);
   const act    = document.getElementById('activation').value;
   const outAct = document.getElementById('output-activation').value;
 
-  let layers = [[`入力`, inSize]];
-  hidden.forEach((h, i) => layers.push([`隠れ ${i+1} (${act})`, h]));
-  layers.push([`出力 (${outAct})`, outSize]);
+  const cols = [['入力', inSize, '—']];
+  let prev = inSize;
+  hidden.forEach((h, i) => {
+    cols.push([`隠れ ${i+1} (${act})`, h, (prev * h + h).toLocaleString()]);
+    prev = h;
+  });
+  cols.push([`出力 (${outAct})`, outSize, (prev * outSize + outSize).toLocaleString()]);
+  const total = hidden.reduce((acc, h, i) => {
+    const p = i === 0 ? inSize : hidden[i-1];
+    return acc + p * h + h;
+  }, 0) + prev * outSize + outSize;
 
-  const totalParams = () => {
-    let total = 0, prev = inSize;
-    hidden.forEach(h => { total += prev * h + h; prev = h; });
-    total += prev * outSize + outSize;
-    return total;
-  };
-
-  const sumDiv = document.getElementById('model-summary');
-  sumDiv.innerHTML = `
+  document.getElementById('model-summary').innerHTML = `
     <table>
-      <thead><tr><th>層</th><th>ユニット数</th><th>パラメータ</th></tr></thead>
-      <tbody>${layers.map((l, i) => {
-        const prev  = i === 0 ? 0 : (layers[i-1][1]);
-        const params = i === 0 ? '—' : (prev * l[1] + l[1]).toLocaleString();
-        return `<tr><td>${esc(l[0])}</td><td>${l[1]}</td><td>${params}</td></tr>`;
-      }).join('')}</tbody>
+      <thead><tr><th>層</th><th>ユニット</th><th>パラメータ</th></tr></thead>
+      <tbody>${cols.map(([n, u, p]) =>
+        `<tr><td>${esc(n)}</td><td>${u}</td><td>${p}</td></tr>`).join('')}
+      </tbody>
     </table>
-    <div class="total-params">合計パラメータ: ${totalParams().toLocaleString()}</div>
+    <div class="total-params">合計パラメータ: ${total.toLocaleString()}</div>
     <div style="margin-top:.5rem;font-size:.78rem;color:var(--text2)">
-      入力特徴量: ${esc(features.join(', '))}<br>
+      入力特徴量 (${features.length}): ${esc(features.join(', '))}<br>
       目的変数: <span style="color:var(--accent)">${esc(target)}</span>
     </div>`;
 }
@@ -249,29 +404,32 @@ document.getElementById('btn-train').addEventListener('click', startTraining);
 document.getElementById('btn-stop').addEventListener('click', stopTraining);
 
 async function startTraining() {
-  const did = trainDatasetSel.value;
-  if (!did) { alert('データセットを選択してください'); return; }
+  const did    = trainDatasetSel.value;
   const target = trainTargetSel.value;
+  if (!did)    { alert('データセットを選択してください'); return; }
   if (!target) { alert('目的変数を選択してください'); return; }
 
   const hiddenStr = document.getElementById('hidden-layers').value;
   const hidden = hiddenStr.split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n) && n > 0);
+  const epochs = parseInt(document.getElementById('epochs').value);
 
   const config = {
-    hidden_layers:       hidden,
-    activation:          document.getElementById('activation').value,
-    output_activation:   document.getElementById('output-activation').value,
-    loss:                document.getElementById('loss-fn').value,
-    optimizer:           document.getElementById('optimizer').value,
-    lr:                  parseFloat(document.getElementById('lr').value),
-    epochs:              parseInt(document.getElementById('epochs').value),
-    batch_size:          parseInt(document.getElementById('batch-size').value),
+    hidden_layers:     hidden,
+    activation:        document.getElementById('activation').value,
+    output_activation: document.getElementById('output-activation').value,
+    loss:              document.getElementById('loss-fn').value,
+    optimizer:         document.getElementById('optimizer').value,
+    lr:                parseFloat(document.getElementById('lr').value),
+    epochs,
+    batch_size:        parseInt(document.getElementById('batch-size').value),
   };
 
   document.getElementById('btn-train').disabled = true;
   document.getElementById('btn-stop').disabled  = false;
   document.getElementById('train-status-bar').classList.remove('hidden');
-  updateProgress(0, 'セッション開始中…');
+  document.getElementById('train-health-badge').classList.add('hidden');
+  document.getElementById('train-metrics').innerHTML = '';
+  updateProgress(0, '接続中…');
 
   try {
     const res  = await fetch('/api/train/start', {
@@ -281,13 +439,18 @@ async function startTraining() {
     });
     const json = await res.json();
     if (!json.ok) throw new Error(json.error);
-
     const sid = json.data.session_id;
-    state.sessions[sid] = { id: sid, status: 'training', history: { loss: [], val_loss: [], accuracy: [] } };
+    state.sessions[sid] = {
+      id: sid, status: 'training', config: json.data.config,
+      history: { loss: [], val_loss: [], accuracy: [] },
+      features: json.data.features,
+      target: json.data.target,
+    };
     state.activeSession = sid;
     refreshPreviewSessionList();
     refreshPredictSessionList();
-    startSSE(sid, config.epochs);
+    setHint(`学習中 Session ${sid} — プレビュータブでグラフを確認できます`);
+    startSSE(sid, epochs);
   } catch (e) {
     alert(`エラー: ${e.message}`);
     trainDone();
@@ -303,37 +466,85 @@ function startSSE(sid, totalEpochs) {
     const evt = JSON.parse(e.data);
     if (evt.done) {
       state.sessions[sid].status = 'done';
-      updateProgress(100, '学習完了 ✅');
+      updateProgress(100, '学習完了');
+      setHealthBadge('good', '学習完了 ✅');
       trainDone();
+      markTabDone('train');
+      unlockTab('preview');
+      unlockTab('predict');
+      setHint('学習完了！「プレビュー」でグラフを確認し「予測」で試してみましょう ✓', true);
       sse.close();
-      // Switch to preview
-      setTimeout(() => {
-        document.querySelector('[data-tab="preview"]').click();
-      }, 800);
+      setTimeout(() => switchTab('preview'), 600);
       return;
     }
     const { epoch, loss, val_loss, accuracy } = evt;
     const pct = Math.round((epoch / totalEpochs) * 100);
-    const vlStr = val_loss != null ? `  val_loss: ${val_loss.toFixed(4)}` : '';
-    updateProgress(pct,
-      `Epoch ${epoch}/${totalEpochs} &nbsp;|&nbsp; loss: ${loss.toFixed(4)}${vlStr} &nbsp;|&nbsp; acc: ${(accuracy*100).toFixed(1)}%`);
+    updateProgress(pct, `Epoch ${epoch} / ${totalEpochs}`);
+    updateMetrics(loss, val_loss, accuracy);
 
-    // Update session history
     const sess = state.sessions[sid];
     sess.history.loss.push(loss);
     if (val_loss != null) sess.history.val_loss.push(val_loss);
     sess.history.accuracy.push(accuracy);
 
-    // If preview tab is active, live-draw
+    // Health detection
+    detectTrainingHealth(sess.history);
+
     if (document.getElementById('tab-preview').classList.contains('active')) {
       drawCharts(sid);
     }
   };
+  sse.onerror = () => { trainDone(); sse.close(); };
+}
 
-  sse.onerror = () => {
-    trainDone();
-    sse.close();
-  };
+function detectTrainingHealth(history) {
+  const loss    = history.loss;
+  const valLoss = history.val_loss;
+  const n = loss.length;
+  if (n < 8) return;
+
+  const recentLoss = loss.slice(-5);
+  const improving = recentLoss[0] - recentLoss[recentLoss.length - 1] > 0.001;
+
+  if (valLoss.length >= 5) {
+    const vl = valLoss.slice(-5);
+    const overfitting = vl.every((v, i) => i === 0 || v >= vl[i-1]) &&
+                        loss[loss.length-1] < loss[loss.length-5] * 0.95;
+    if (overfitting) {
+      setHealthBadge('danger', '⚠ 過学習の兆候');
+      return;
+    }
+  }
+  if (!improving) {
+    setHealthBadge('warn', '⏸ 損失が停滞中');
+  } else {
+    setHealthBadge('good', '↘ 損失改善中');
+  }
+}
+
+function setHealthBadge(cls, text) {
+  const el = document.getElementById('train-health-badge');
+  el.className = `health-badge ${cls}`;
+  el.textContent = text;
+  el.classList.remove('hidden');
+}
+
+function updateMetrics(loss, valLoss, accuracy) {
+  const container = document.getElementById('train-metrics');
+  const vl = valLoss != null ? valLoss.toFixed(4) : '—';
+  container.innerHTML = `
+    <div class="metric-chip">
+      <div class="metric-label">Loss</div>
+      <div class="metric-value">${loss.toFixed(4)}</div>
+    </div>
+    <div class="metric-chip">
+      <div class="metric-label">Val Loss</div>
+      <div class="metric-value">${vl}</div>
+    </div>
+    <div class="metric-chip">
+      <div class="metric-label">Accuracy</div>
+      <div class="metric-value">${(accuracy * 100).toFixed(1)}%</div>
+    </div>`;
 }
 
 function stopTraining() {
@@ -344,32 +555,74 @@ function stopTraining() {
     body: JSON.stringify({ session_id: state.activeSession }),
   });
 }
-
 function trainDone() {
   document.getElementById('btn-train').disabled = false;
   document.getElementById('btn-stop').disabled  = true;
 }
-
 function updateProgress(pct, msg) {
   document.getElementById('progress-bar').style.width = `${pct}%`;
-  document.getElementById('train-status-text').innerHTML = msg;
+  document.getElementById('train-status-text').textContent = msg;
 }
+
+// ================================================================
+// Inline tooltips (? buttons)
+// ================================================================
+document.getElementById('tab-train').addEventListener('click', async e => {
+  const btn = e.target.closest('.info-icon');
+  if (!btn) return;
+  const topic = btn.dataset.topic;
+  try {
+    const res  = await fetch(`/api/explain?topic=${encodeURIComponent(topic)}`);
+    const json = await res.json();
+    if (!json.ok) return;
+    showTooltip(btn, json.data.explanation);
+  } catch {}
+});
+
+function showTooltip(anchor, markdown) {
+  const tooltip = document.getElementById('inline-tooltip');
+  const body    = document.getElementById('tooltip-body');
+  body.innerHTML = renderMarkdown(markdown);
+  tooltip.classList.remove('hidden');
+  // Position near button
+  const rect = anchor.getBoundingClientRect();
+  const tW = 340, tH = 250;
+  let left = rect.left;
+  let top  = rect.bottom + 8 + window.scrollY;
+  if (left + tW > window.innerWidth - 8) left = window.innerWidth - tW - 8;
+  if (left < 8) left = 8;
+  tooltip.style.left = `${left}px`;
+  tooltip.style.top  = `${top}px`;
+}
+
+document.getElementById('tooltip-close').addEventListener('click', () => {
+  document.getElementById('inline-tooltip').classList.add('hidden');
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') document.getElementById('inline-tooltip').classList.add('hidden');
+});
 
 // ================================================================
 // Preview Tab
 // ================================================================
 function refreshPreviewSessionList() {
   const sel = document.getElementById('preview-session');
-  const cur = sel.value;
+  const cur = sel.value || state.activeSession;
   sel.innerHTML = '<option value="">-- 選択 --</option>';
   Object.keys(state.sessions).forEach(sid => {
     const opt = document.createElement('option');
-    opt.value = sid; opt.textContent = `Session ${sid}`;
-    if (sid === cur || sid === state.activeSession) opt.selected = true;
+    const sess = state.sessions[sid];
+    opt.value = sid;
+    opt.textContent = `Session ${sid} (${sess.status === 'done' ? '完了' : '学習中'})`;
+    if (sid === cur) opt.selected = true;
     sel.appendChild(opt);
   });
   const active = sel.value;
-  if (active) document.getElementById('btn-download').disabled = false;
+  if (active) {
+    document.getElementById('btn-download').disabled = false;
+    drawCharts(active);
+    drawArchitecture(active);
+  }
 }
 
 document.getElementById('preview-session').addEventListener('change', () => {
@@ -403,63 +656,50 @@ function drawCharts(sid) {
   if (!sess) return;
   drawLineChart('chart-loss',
     [sess.history.loss, sess.history.val_loss.length ? sess.history.val_loss : null],
-    ['#58a6ff', '#f0883e'],
-    ['訓練損失', '検証損失']);
+    ['#58a6ff', '#f0883e'], ['訓練損失', '検証損失']);
   drawLineChart('chart-acc',
-    [sess.history.accuracy],
-    ['#7ee787'],
-    ['精度']);
+    [sess.history.accuracy], ['#7ee787'], ['精度']);
 }
 
 function drawLineChart(canvasId, seriesList, colors, labels) {
   const canvas = document.getElementById(canvasId);
   if (!canvas) return;
-  const ctx = canvas.getContext('2d');
   const W = canvas.offsetWidth || canvas.width;
   const H = canvas.height;
   canvas.width = W;
-
+  const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, W, H);
   ctx.fillStyle = '#21262d';
   ctx.fillRect(0, 0, W, H);
 
-  const pad = { top: 16, right: 20, bottom: 32, left: 52 };
+  const pad = { top: 20, right: 20, bottom: 32, left: 56 };
   const cw = W - pad.left - pad.right;
   const ch = H - pad.top - pad.bottom;
 
-  // Find value range
   let minV = Infinity, maxV = -Infinity;
-  seriesList.forEach(s => {
-    if (!s) return;
-    s.forEach(v => { if (v < minV) minV = v; if (v > maxV) maxV = v; });
-  });
+  seriesList.forEach(s => { if (!s) return; s.forEach(v => { if (v < minV) minV = v; if (v > maxV) maxV = v; }); });
+  if (!isFinite(minV)) return;
   if (minV === maxV) { minV -= 0.1; maxV += 0.1; }
-  const vRange = maxV - minV || 1;
-
+  const vRange = maxV - minV;
   const maxLen = Math.max(...seriesList.filter(Boolean).map(s => s.length));
   if (maxLen < 2) return;
 
-  // Grid lines
+  // Grid
   ctx.strokeStyle = '#30363d'; ctx.lineWidth = 1;
   for (let i = 0; i <= 4; i++) {
     const y = pad.top + ch * (i / 4);
-    ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(pad.left + cw, y);
-    ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(pad.left + cw, y); ctx.stroke();
     const v = maxV - (vRange * i / 4);
-    ctx.fillStyle = '#8b949e'; ctx.font = '11px monospace';
-    ctx.textAlign = 'right';
-    ctx.fillText(v.toFixed(4), pad.left - 6, y + 4);
+    ctx.fillStyle = '#8b949e'; ctx.font = '11px monospace'; ctx.textAlign = 'right';
+    ctx.fillText(v.toFixed(3), pad.left - 5, y + 4);
   }
-
-  // X-axis labels
+  // X labels
   ctx.fillStyle = '#8b949e'; ctx.font = '11px monospace'; ctx.textAlign = 'center';
   for (let i = 0; i <= 4; i++) {
     const x = pad.left + cw * (i / 4);
-    const ep = Math.round(maxLen * i / 4);
-    ctx.fillText(ep, x, H - 8);
+    ctx.fillText(Math.round(maxLen * i / 4), x, H - 6);
   }
 
-  // Series
   seriesList.forEach((s, si) => {
     if (!s || s.length < 2) return;
     ctx.beginPath(); ctx.strokeStyle = colors[si]; ctx.lineWidth = 2;
@@ -469,74 +709,55 @@ function drawLineChart(canvasId, seriesList, colors, labels) {
       if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
     });
     ctx.stroke();
-
     // Legend
     const lx = pad.left + si * 110 + 8;
-    const ly = pad.top + 12;
-    ctx.fillStyle = colors[si];
-    ctx.fillRect(lx, ly - 7, 14, 4);
+    ctx.fillStyle = colors[si]; ctx.fillRect(lx, pad.top + 8, 14, 4);
     ctx.fillStyle = '#c9d1d9'; ctx.font = '11px sans-serif'; ctx.textAlign = 'left';
-    ctx.fillText(labels[si], lx + 18, ly);
+    ctx.fillText(labels[si], lx + 18, pad.top + 13);
   });
 }
 
 function drawArchitecture(sid) {
   const sess = state.sessions[sid];
-  if (!sess || !sess.config) return;
+  if (!sess?.config?.layers) return;
   const canvas = document.getElementById('chart-arch');
   if (!canvas) return;
   const W = canvas.offsetWidth || 900;
-  canvas.width = W;
+  canvas.width = W; canvas.height = 200;
   const H = 200;
-  canvas.height = H;
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, W, H);
   ctx.fillStyle = '#21262d'; ctx.fillRect(0, 0, W, H);
 
   const layers = sess.config.layers;
-  if (!layers) return;
+  const cols = [{ label: '入力', size: layers[0].in }];
+  layers.forEach((l, i) => cols.push({ label: `L${i+1}\n${l.activation}`, size: l.out }));
 
-  const totalLayers = layers.length + 1; // +1 for input
-  const colW = W / totalLayers;
-  const inSize = layers[0].in;
+  const maxDots = 6, dotR = 7;
+  const colW = W / cols.length;
+  const cx = i => colW * i + colW / 2;
 
-  // Draw columns: input + each layer's output
-  const cols = [{ label: '入力', size: inSize }];
-  layers.forEach((l, i) => {
-    cols.push({ label: `L${i+1}\n${l.activation}`, size: l.out });
-  });
-
-  const maxDots = 6;
-  const dotR = 7;
-  const cx = (i) => colW * i + colW / 2;
-
-  // Draw connections first
-  ctx.lineWidth = 0.6;
+  // Connections
+  ctx.lineWidth = 0.5; ctx.strokeStyle = 'rgba(88,166,255,.1)';
   for (let ci = 0; ci < cols.length - 1; ci++) {
-    const a = cols[ci], b = cols[ci + 1];
-    const aDots = Math.min(a.size, maxDots);
-    const bDots = Math.min(b.size, maxDots);
-    ctx.strokeStyle = 'rgba(88,166,255,0.12)';
-    for (let ai = 0; ai < aDots; ai++) {
-      const ay = dotY(ai, aDots, H);
-      for (let bi = 0; bi < bDots; bi++) {
-        const by = dotY(bi, bDots, H);
+    const aN = Math.min(cols[ci].size, maxDots);
+    const bN = Math.min(cols[ci+1].size, maxDots);
+    for (let ai = 0; ai < aN; ai++) {
+      for (let bi = 0; bi < bN; bi++) {
         ctx.beginPath();
-        ctx.moveTo(cx(ci) + dotR, ay);
-        ctx.lineTo(cx(ci + 1) - dotR, by);
+        ctx.moveTo(cx(ci) + dotR, dotY(ai, aN, H));
+        ctx.lineTo(cx(ci+1) - dotR, dotY(bi, bN, H));
         ctx.stroke();
       }
     }
   }
-
-  // Draw nodes
+  // Nodes
   cols.forEach((col, ci) => {
     const n = Math.min(col.size, maxDots);
     const isLast = ci === cols.length - 1;
     for (let ni = 0; ni < n; ni++) {
-      const y = dotY(ni, n, H);
       ctx.beginPath();
-      ctx.arc(cx(ci), y, dotR, 0, Math.PI * 2);
+      ctx.arc(cx(ci), dotY(ni, n, H), dotR, 0, Math.PI * 2);
       ctx.fillStyle = isLast ? '#7ee787' : (ci === 0 ? '#f0883e' : '#58a6ff');
       ctx.fill();
     }
@@ -544,13 +765,8 @@ function drawArchitecture(sid) {
       ctx.fillStyle = '#8b949e'; ctx.font = '11px sans-serif'; ctx.textAlign = 'center';
       ctx.fillText('⋮', cx(ci), H / 2 + 4);
     }
-    // Label
     ctx.fillStyle = '#c9d1d9'; ctx.font = '11px sans-serif'; ctx.textAlign = 'center';
-    const lines = col.label.split('\n');
-    lines.forEach((line, li) => {
-      ctx.fillText(line, cx(ci), H - 14 + li * 13);
-    });
-    // Size badge
+    col.label.split('\n').forEach((line, li) => ctx.fillText(line, cx(ci), H - 14 + li * 13));
     ctx.fillStyle = '#484f58'; ctx.font = 'bold 10px monospace';
     ctx.fillText(`×${col.size}`, cx(ci), 16);
   });
@@ -558,26 +774,24 @@ function drawArchitecture(sid) {
 
 function dotY(i, total, H) {
   const pad = 30;
-  const range = H - pad * 2;
-  return total === 1 ? H / 2 : pad + (i / (total - 1)) * range;
+  return total === 1 ? H / 2 : pad + (i / (total - 1)) * (H - pad * 2);
 }
 
 // ================================================================
 // Predict Tab
 // ================================================================
 function refreshPredictSessionList() {
-  ['predict-session'].forEach(id => {
-    const sel = document.getElementById(id);
-    const cur = sel.value;
-    sel.innerHTML = '<option value="">-- 選択 --</option>';
-    Object.keys(state.sessions).forEach(sid => {
-      const opt = document.createElement('option');
-      opt.value = sid; opt.textContent = `Session ${sid}`;
-      if (sid === cur || sid === state.activeSession) opt.selected = true;
-      sel.appendChild(opt);
-    });
-    if (sel.value) buildPredictForm(sel.value);
+  const sel = document.getElementById('predict-session');
+  const cur = sel.value || state.activeSession;
+  sel.innerHTML = '<option value="">-- 選択 --</option>';
+  Object.keys(state.sessions).forEach(sid => {
+    const opt = document.createElement('option');
+    opt.value = sid;
+    opt.textContent = `Session ${sid}`;
+    if (sid === cur) opt.selected = true;
+    sel.appendChild(opt);
   });
+  if (sel.value) buildPredictForm(sel.value);
 }
 
 document.getElementById('predict-session').addEventListener('change', () => {
@@ -588,13 +802,17 @@ function buildPredictForm(sid) {
   const container = document.getElementById('predict-inputs');
   const btn = document.getElementById('btn-predict');
   if (!sid || !state.sessions[sid]) {
-    container.innerHTML = '<p class="empty-hint">セッションを選択してください</p>';
-    btn.disabled = true;
-    return;
+    container.innerHTML = `<div class="empty-state">
+      <div class="empty-icon">✏️</div>
+      <p>セッションを選択してください</p>
+      <p class="hint">先に「学習」タブでモデルをトレーニングしてください</p>
+    </div>`;
+    btn.disabled = true; return;
   }
   const features = state.sessions[sid].features || [];
   if (!features.length) {
-    container.innerHTML = '<p class="empty-hint">特徴量情報がありません</p>';
+    // Try loading from server
+    loadSession(sid).then(() => buildPredictForm(sid));
     return;
   }
   container.innerHTML = features.map(f => `
@@ -610,7 +828,6 @@ document.getElementById('btn-predict').addEventListener('click', async () => {
   if (!sid) return;
   const inputs = [...document.querySelectorAll('#predict-inputs input')]
     .map(el => parseFloat(el.value) || 0);
-
   try {
     const res  = await fetch('/api/predict', {
       method: 'POST',
@@ -644,7 +861,6 @@ document.querySelectorAll('.topic-btn').forEach(btn => {
     fetchExplain(btn.dataset.topic);
   });
 });
-
 document.getElementById('btn-explain').addEventListener('click', () => {
   const q = document.getElementById('explain-input').value.trim();
   if (q) fetchExplain(q);
@@ -655,33 +871,29 @@ document.getElementById('explain-input').addEventListener('keydown', e => {
 
 async function fetchExplain(topic) {
   try {
-    const res  = await fetch('/api/explain', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ topic }),
-    });
+    const res  = await fetch(`/api/explain?topic=${encodeURIComponent(topic)}`);
     const json = await res.json();
     if (!json.ok) throw new Error(json.error);
-    renderExplain(json.data.topic, json.data.explanation);
+    document.getElementById('explain-title').textContent = `解説: ${json.data.topic}`;
+    document.getElementById('explain-content').innerHTML = renderMarkdown(json.data.explanation);
   } catch (e) {
     document.getElementById('explain-content').textContent = `エラー: ${e.message}`;
   }
 }
 
-function renderExplain(topic, text) {
-  document.getElementById('explain-title').textContent = `解説: ${topic}`;
-  const content = document.getElementById('explain-content');
-  // Simple markdown: **bold**, newlines
-  const html = text
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+// ================================================================
+// Markdown-lite renderer (for explanations)
+// ================================================================
+function renderMarkdown(text) {
+  return text
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/`(.+?)`/g, '<code>$1</code>')
     .replace(/\n/g, '<br>');
-  content.innerHTML = html;
 }
 
 // ================================================================
-// Session management - load from server on demand
+// Session loader
 // ================================================================
 async function loadSession(sid) {
   try {
@@ -690,12 +902,8 @@ async function loadSession(sid) {
     if (!json.ok) return;
     const d = json.data;
     state.sessions[sid] = {
-      id: sid,
-      status: d.status,
-      config: d.config,
-      history: d.history,
-      features: d.features,
-      target: d.target,
+      id: sid, status: d.status, config: d.config,
+      history: d.history, features: d.features, target: d.target,
     };
   } catch {}
 }
@@ -706,28 +914,22 @@ async function loadSession(sid) {
 function esc(str) {
   if (str == null) return '';
   return String(str)
-    .replace(/&/g,'&amp;')
-    .replace(/</g,'&lt;')
-    .replace(/>/g,'&gt;')
-    .replace(/"/g,'&quot;');
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
 // ================================================================
 // Boot
 // ================================================================
 (async function boot() {
-  // Load existing datasets
   try {
     const res  = await fetch('/api/datasets');
     const json = await res.json();
     if (json.ok && json.data.length) {
-      json.data.forEach(ds => {
-        if (!state.datasets[ds.id]) {
-          state.datasets[ds.id] = ds;
-        }
-      });
+      json.data.forEach(ds => { if (!state.datasets[ds.id]) state.datasets[ds.id] = ds; });
       renderDatasetList();
       refreshTrainDatasets();
+      unlockTab('train');
     }
   } catch {}
 })();

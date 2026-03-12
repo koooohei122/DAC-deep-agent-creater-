@@ -164,6 +164,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._serve_file(ROOT / "static" / "app.js", "application/javascript")
         elif path == "/api/datasets":
             self._api_list_datasets()
+        elif path == "/api/dataset/preview":
+            did = query.get("id", [None])[0]
+            self._api_dataset_preview(did)
+        elif path == "/api/autoconfig":
+            did = query.get("id", [None])[0]
+            col = query.get("target", [None])[0]
+            self._api_autoconfig(did, col)
+        elif path == "/api/explain":
+            topic = query.get("topic", [""])[0]
+            s, ct, b = _ok({"topic": topic, "explanation": _get_explanation(topic)})
+            self._respond(s, ct, b)
         elif path == "/api/session":
             sid = query.get("id", [None])[0]
             self._api_get_session(sid)
@@ -229,6 +240,86 @@ class Handler(http.server.BaseHTTPRequestHandler):
         s, ct, b = _ok(analysis)
         self._respond(s, ct, b)
 
+    def _api_dataset_preview(self, did):
+        if did not in DATASETS:
+            s, ct, b = _err("データセットが見つかりません"); self._respond(s, ct, b); return
+        path = DATASETS[did]["path"]
+        try:
+            with open(path, newline="", encoding="utf-8-sig") as f:
+                reader = csv.DictReader(f)
+                rows = list(reader)[:10]
+            if not rows:
+                s, ct, b = _err("データが空です"); self._respond(s, ct, b); return
+            headers = list(rows[0].keys())
+            data = [[row.get(h, "") for h in headers] for row in rows]
+            s, ct, b = _ok({"headers": headers, "rows": data, "total": DATASETS[did]["analysis"].get("rows", 0)})
+        except Exception as e:
+            s, ct, b = _err(str(e))
+        self._respond(s, ct, b)
+
+    def _api_autoconfig(self, did, target_col):
+        if did not in DATASETS:
+            s, ct, b = _err("データセットが見つかりません"); self._respond(s, ct, b); return
+        analysis = DATASETS[did]["analysis"]
+        col_summary = {c["name"]: c for c in analysis.get("column_summary", [])}
+        if not target_col or target_col not in col_summary:
+            s, ct, b = _err("目的変数が見つかりません"); self._respond(s, ct, b); return
+        col = col_summary[target_col]
+        n_features = analysis["columns"] - 1
+        n_rows = analysis["rows"]
+
+        # Determine task type
+        if col["type"] == "数値":
+            task = "regression"
+            output_activation = "linear"
+            loss = "mse"
+            task_label = "回帰"
+        else:
+            unique = col.get("unique", 2)
+            if unique <= 2:
+                task = "binary"
+                output_activation = "sigmoid"
+                loss = "bce"
+                task_label = "2値分類"
+            else:
+                task = "multiclass"
+                output_activation = "softmax"
+                loss = "cross_entropy"
+                task_label = f"多クラス分類 ({unique}クラス)"
+
+        # Suggest architecture based on data size
+        if n_rows < 100:
+            hidden = [16, 8]
+        elif n_rows < 500:
+            hidden = [32, 16]
+        elif n_rows < 2000:
+            hidden = [64, 32]
+        else:
+            hidden = [128, 64, 32]
+
+        # Adjust for feature count
+        hidden = [max(h, n_features * 2) for h in hidden]
+
+        config = {
+            "task": task,
+            "task_label": task_label,
+            "hidden_layers": hidden,
+            "activation": "relu",
+            "output_activation": output_activation,
+            "loss": loss,
+            "optimizer": "adam",
+            "lr": 0.001,
+            "epochs": 50 if n_rows < 500 else 30,
+            "batch_size": min(32, max(8, n_rows // 10)),
+        }
+        reason = (
+            f"「{target_col}」は{col['type']}型のため{task_label}タスクと判定。"
+            f" データ{n_rows}件・{n_features}特徴量に基づき"
+            f" 隠れ層{hidden}を提案。"
+        )
+        s, ct, b = _ok({"config": config, "reason": reason})
+        self._respond(s, ct, b)
+
     def _api_list_datasets(self):
         lst = [{"id": d["id"], "filename": d["filename"],
                 "rows": d["analysis"].get("rows", 0),
@@ -284,6 +375,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
             layers.append({"in": prev, "out": h, "activation": activation})
             prev = h
         layers.append({"in": prev, "out": out_size, "activation": last_act})
+
+        # Validate compatibility
+        if last_act == "softmax" and loss_fn not in ("cross_entropy",):
+            s, ct, b = _err("Softmax出力にはCross Entropy損失を使用してください")
+            self._respond(s, ct, b); return
+        if last_act == "sigmoid" and loss_fn not in ("bce", "mse"):
+            s, ct, b = _err("Sigmoid出力にはBCEまたはMSE損失を使用してください")
+            self._respond(s, ct, b); return
 
         nn_config = {
             "layers": layers,
