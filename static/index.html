@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DAC Local AI</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <!-- ====== Header ====== -->
+  <header>
+    <div class="header-inner">
+      <div class="logo">
+        <span class="logo-icon">⬡</span>
+        <span class="logo-text">DAC <span class="accent">Local AI</span></span>
+      </div>
+      <nav class="tabs">
+        <button class="tab active" data-tab="upload">データ</button>
+        <button class="tab" data-tab="train">学習</button>
+        <button class="tab" data-tab="preview">プレビュー</button>
+        <button class="tab" data-tab="predict">予測</button>
+        <button class="tab" data-tab="explain">解説</button>
+      </nav>
+    </div>
+  </header>
+
+  <!-- ====== Main ====== -->
+  <main>
+
+    <!-- ===== TAB: Data Upload ===== -->
+    <section id="tab-upload" class="tab-content active">
+      <div class="panel-grid">
+
+        <!-- Upload card -->
+        <div class="card">
+          <h2 class="card-title">データアップロード</h2>
+          <div id="drop-zone" class="drop-zone">
+            <div class="drop-icon">📂</div>
+            <p>CSVファイルをドラッグ&ドロップ<br>または</p>
+            <label class="btn btn-primary">
+              ファイルを選択
+              <input type="file" id="file-input" accept=".csv" hidden>
+            </label>
+            <p class="hint">対応形式: CSV (UTF-8, Shift-JIS)</p>
+          </div>
+          <div id="upload-status" class="upload-status hidden"></div>
+        </div>
+
+        <!-- Dataset list -->
+        <div class="card">
+          <h2 class="card-title">データセット一覧</h2>
+          <div id="dataset-list" class="dataset-list">
+            <p class="empty-hint">まだデータがありません</p>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Analysis result -->
+      <div id="analysis-section" class="card hidden">
+        <div class="analysis-header">
+          <h2 class="card-title">データ分析 & AI向け編集アドバイス</h2>
+          <div class="analysis-meta" id="analysis-meta"></div>
+        </div>
+
+        <!-- Stats -->
+        <div class="table-wrap">
+          <table id="col-table" class="data-table">
+            <thead>
+              <tr>
+                <th>列名</th><th>型</th><th>欠損</th><th>欠損率</th>
+                <th>最小</th><th>最大</th><th>平均</th><th>標準偏差</th><th>外れ値</th>
+              </tr>
+            </thead>
+            <tbody id="col-tbody"></tbody>
+          </table>
+        </div>
+
+        <!-- Edit instructions -->
+        <div id="instructions-section">
+          <h3 class="section-label">編集指示 <span id="instruction-count" class="badge"></span></h3>
+          <div id="instructions-list" class="instructions-list"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== TAB: Train ===== -->
+    <section id="tab-train" class="tab-content">
+      <div class="panel-grid">
+
+        <div class="card">
+          <h2 class="card-title">モデル設定</h2>
+
+          <div class="form-group">
+            <label>データセット</label>
+            <select id="train-dataset">
+              <option value="">-- 選択 --</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>目的変数（予測したい列）</label>
+            <select id="train-target">
+              <option value="">-- データセット選択後 --</option>
+            </select>
+          </div>
+
+          <div class="divider"></div>
+          <h3 class="sub-title">ネットワーク構成</h3>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label>隠れ層</label>
+              <input type="text" id="hidden-layers" value="64,32" placeholder="例: 64,32,16">
+            </div>
+            <div class="form-group">
+              <label>活性化関数</label>
+              <select id="activation">
+                <option value="relu">ReLU</option>
+                <option value="tanh">Tanh</option>
+                <option value="sigmoid">Sigmoid</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label>出力活性化</label>
+              <select id="output-activation">
+                <option value="linear">Linear (回帰)</option>
+                <option value="sigmoid">Sigmoid (2値分類)</option>
+                <option value="softmax">Softmax (多クラス)</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>損失関数</label>
+              <select id="loss-fn">
+                <option value="mse">MSE (回帰)</option>
+                <option value="mae">MAE (回帰)</option>
+                <option value="bce">BCE (2値分類)</option>
+                <option value="cross_entropy">Cross Entropy (多クラス)</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="divider"></div>
+          <h3 class="sub-title">学習パラメータ</h3>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label>オプティマイザ</label>
+              <select id="optimizer">
+                <option value="adam">Adam</option>
+                <option value="sgd">SGD</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>学習率</label>
+              <input type="number" id="lr" value="0.001" step="0.0001" min="0.00001" max="1">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>エポック数</label>
+              <input type="number" id="epochs" value="50" min="1" max="1000">
+            </div>
+            <div class="form-group">
+              <label>バッチサイズ</label>
+              <input type="number" id="batch-size" value="32" min="1" max="512">
+            </div>
+          </div>
+
+          <div class="btn-row">
+            <button id="btn-train" class="btn btn-primary btn-lg">学習開始</button>
+            <button id="btn-stop" class="btn btn-danger btn-lg" disabled>停止</button>
+          </div>
+        </div>
+
+        <!-- Model summary -->
+        <div class="card">
+          <h2 class="card-title">モデル概要</h2>
+          <div id="model-summary">
+            <p class="empty-hint">学習設定後に表示されます</p>
+          </div>
+          <div id="train-status-bar" class="train-status-bar hidden">
+            <div class="progress-wrap">
+              <div id="progress-bar" class="progress-bar"></div>
+            </div>
+            <div id="train-status-text" class="train-status-text"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== TAB: Preview ===== -->
+    <section id="tab-preview" class="tab-content">
+      <div class="card">
+        <div class="preview-header">
+          <h2 class="card-title">学習プレビュー</h2>
+          <div class="preview-controls">
+            <select id="preview-session">
+              <option value="">-- セッション選択 --</option>
+            </select>
+            <button id="btn-download" class="btn btn-secondary" disabled>
+              ⬇ モデルをダウンロード
+            </button>
+          </div>
+        </div>
+
+        <div class="chart-grid">
+          <div class="chart-wrap">
+            <h3 class="chart-title">損失 (Loss)</h3>
+            <canvas id="chart-loss" width="500" height="260"></canvas>
+          </div>
+          <div class="chart-wrap">
+            <h3 class="chart-title">精度 (Accuracy)</h3>
+            <canvas id="chart-acc" width="500" height="260"></canvas>
+          </div>
+        </div>
+
+        <div id="arch-vis" class="arch-vis">
+          <h3 class="section-label">ネットワーク構造</h3>
+          <canvas id="chart-arch" width="900" height="200"></canvas>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== TAB: Predict ===== -->
+    <section id="tab-predict" class="tab-content">
+      <div class="panel-grid">
+        <div class="card">
+          <h2 class="card-title">予測</h2>
+          <div class="form-group">
+            <label>セッション</label>
+            <select id="predict-session">
+              <option value="">-- 選択 --</option>
+            </select>
+          </div>
+          <div id="predict-inputs" class="predict-inputs">
+            <p class="empty-hint">セッションを選択すると入力フォームが表示されます</p>
+          </div>
+          <button id="btn-predict" class="btn btn-primary" disabled>予測実行</button>
+        </div>
+        <div class="card">
+          <h2 class="card-title">予測結果</h2>
+          <div id="predict-result" class="predict-result">
+            <p class="empty-hint">予測を実行すると結果が表示されます</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== TAB: Explain ===== -->
+    <section id="tab-explain" class="tab-content">
+      <div class="panel-grid">
+        <div class="card">
+          <h2 class="card-title">機能・用語解説</h2>
+          <div class="topic-grid">
+            <button class="topic-btn" data-topic="neural_network">ニューラルネットワーク</button>
+            <button class="topic-btn" data-topic="backpropagation">バックプロパゲーション</button>
+            <button class="topic-btn" data-topic="activation">活性化関数</button>
+            <button class="topic-btn" data-topic="loss">損失関数</button>
+            <button class="topic-btn" data-topic="optimizer">オプティマイザ</button>
+            <button class="topic-btn" data-topic="normalization">正規化・標準化</button>
+            <button class="topic-btn" data-topic="overfitting">過学習</button>
+            <button class="topic-btn" data-topic="batch">バッチサイズ</button>
+          </div>
+          <div class="form-group" style="margin-top:1rem">
+            <label>キーワード検索</label>
+            <div class="search-row">
+              <input type="text" id="explain-input" placeholder="例: relu, adam, 正規化...">
+              <button id="btn-explain" class="btn btn-primary">検索</button>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <h2 class="card-title" id="explain-title">解説</h2>
+          <div id="explain-content" class="explain-content">
+            <p class="empty-hint">左のトピックを選んでください</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- How this software works -->
+      <div class="card">
+        <h2 class="card-title">このソフトウェアについて</h2>
+        <div class="about-grid">
+          <div class="about-item">
+            <div class="about-icon">🧮</div>
+            <h3>純Python製AIエンジン</h3>
+            <p>行列演算・ニューラルネットワーク・バックプロパゲーション・オプティマイザをすべてPython標準ライブラリのみで実装。NumPy/TensorFlow不使用。</p>
+          </div>
+          <div class="about-item">
+            <div class="about-icon">📊</div>
+            <h3>データ分析アドバイザ</h3>
+            <p>アップロードしたCSVを自動解析し、欠損値・外れ値・スケール・歪みなどの問題を検出。具体的な編集手順を優先度付きで提示します。</p>
+          </div>
+          <div class="about-item">
+            <div class="about-icon">📈</div>
+            <h3>リアルタイム学習プレビュー</h3>
+            <p>Server-Sent Events(SSE)を使って学習の進捗をリアルタイムでグラフ表示。損失・精度の推移を学習中に確認できます。</p>
+          </div>
+          <div class="about-item">
+            <div class="about-icon">⬇</div>
+            <h3>モデルダウンロード</h3>
+            <p>学習済みモデルをJSON形式でダウンロード。重み・バイアス・アーキテクチャ・学習履歴をすべて含みます。</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>
