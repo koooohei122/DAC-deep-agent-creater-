@@ -645,7 +645,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "keep-alive")
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Origin", "http://localhost:8080")
         self.end_headers()
 
         sent = 0
@@ -752,13 +752,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Origin", "http://localhost:8080")
         self.end_headers()
         self.wfile.write(body)
 
     def do_OPTIONS(self):
         self.send_response(200)
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Origin", "http://localhost:8080")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
@@ -921,7 +921,8 @@ def _get_explanation(topic: str) -> str:
 # ======================================================================== #
 def main():
     port = int(os.environ.get("PORT", 8080))
-    server = http.server.ThreadingHTTPServer(("", port), Handler)
+    host = os.environ.get("HOST", "127.0.0.1")
+    server = http.server.ThreadingHTTPServer((host, port), Handler)
     print("=" * 60)
     print("  DAC Local AI Software")
     print(f"  http://localhost:{port}")
