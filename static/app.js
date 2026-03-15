@@ -227,6 +227,21 @@ function renderAnalysis(did) {
     });
   }
   document.getElementById('goto-train-cta').classList.remove('hidden');
+
+  // Show fix bar if there are issues
+  const fixBar = document.getElementById('fix-bar');
+  const fixStatus = document.getElementById('fix-status');
+  const fixBtn = document.getElementById('btn-fix-all');
+  if (fixBar) {
+    if (a.total_issues > 0) {
+      fixBar.classList.remove('hidden');
+      fixStatus.textContent = '';
+      fixStatus.className = 'fix-status';
+      if (fixBtn) fixBtn.disabled = false;
+    } else {
+      fixBar.classList.add('hidden');
+    }
+  }
 }
 
 document.getElementById('btn-goto-train')?.addEventListener('click', () => {
@@ -622,6 +637,7 @@ function refreshPreviewSessionList() {
     document.getElementById('btn-download').disabled = false;
     drawCharts(active);
     drawArchitecture(active);
+    maybeShowEvalSection(active);
   }
 }
 
@@ -631,6 +647,7 @@ document.getElementById('preview-session').addEventListener('change', () => {
     document.getElementById('btn-download').disabled = false;
     drawCharts(sid);
     drawArchitecture(sid);
+    maybeShowEvalSection(sid);
   }
 });
 
@@ -916,6 +933,255 @@ function esc(str) {
   return String(str)
     .replace(/&/g,'&amp;').replace(/</g,'&lt;')
     .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ================================================================
+// Sample data quick-start
+// ================================================================
+document.getElementById('btn-sample-house')?.addEventListener('click', () => loadSample('house_price'));
+document.getElementById('btn-sample-iris')?.addEventListener('click',  () => loadSample('iris'));
+
+async function loadSample(name) {
+  const label = name === 'house_price' ? '住宅価格' : '花の種類';
+  showStatus('upload-status', `⏳ サンプルデータ「${label}」を読み込み中…`, '');
+  try {
+    const res  = await fetch(`/api/sample?name=${name}`);
+    const json = await res.json();
+    if (!json.ok) throw new Error(json.error);
+    const { dataset_id, filename, analysis } = json.data;
+    state.datasets[dataset_id] = { id: dataset_id, filename, analysis };
+    state.activeDataset = dataset_id;
+    showStatus('upload-status',
+      `✅ サンプル「${filename}」を読み込みました（${analysis.rows}行 × ${analysis.columns}列）`, 'success');
+    renderDatasetList();
+    renderAnalysis(dataset_id);
+    await fetchDataPreview(dataset_id);
+    refreshTrainDatasets();
+    unlockTab('train');
+    markTabDone('upload');
+    setHint(`サンプルデータを読み込みました。次は「学習」タブでモデルを設定してください →`);
+  } catch (e) {
+    showStatus('upload-status', `❌ ${e.message}`, 'error');
+  }
+}
+
+// ================================================================
+// Fix dataset
+// ================================================================
+document.getElementById('btn-fix-all')?.addEventListener('click', fixDataset);
+
+async function fixDataset() {
+  const did = state.activeDataset;
+  if (!did) return;
+  const statusEl = document.getElementById('fix-status');
+  const btn = document.getElementById('btn-fix-all');
+  btn.disabled = true;
+  statusEl.textContent = '⏳ 修正中…';
+  try {
+    const res  = await fetch('/api/dataset/fix', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ dataset_id: did }),
+    });
+    const json = await res.json();
+    if (!json.ok) throw new Error(json.error);
+    const { new_dataset_id, filename, analysis, log } = json.data;
+    state.datasets[new_dataset_id] = { id: new_dataset_id, filename, analysis };
+    state.activeDataset = new_dataset_id;
+    renderDatasetList();
+    renderAnalysis(new_dataset_id);
+    await fetchDataPreview(new_dataset_id);
+    refreshTrainDatasets();
+    const summary = log.length ? log.slice(0, 3).join(' / ') + (log.length > 3 ? ` 他${log.length-3}件` : '') : '変更なし';
+    statusEl.textContent = `✅ 修正完了: ${summary}`;
+    statusEl.className = 'fix-status success';
+    showFixDetail(log);
+  } catch (e) {
+    statusEl.textContent = `❌ ${e.message}`;
+    statusEl.className = 'fix-status error';
+    btn.disabled = false;
+  }
+}
+
+function showFixDetail(log) {
+  if (!log.length) return;
+  const list = document.getElementById('instructions-list');
+  const div = document.createElement('div');
+  div.className = 'fix-log-card';
+  div.innerHTML = `<strong>✨ 自動修正ログ</strong><ul>${log.map(l => `<li>${esc(l)}</li>`).join('')}</ul>`;
+  list.insertBefore(div, list.firstChild);
+}
+
+// ================================================================
+// Evaluation (Preview tab)
+// ================================================================
+document.getElementById('btn-evaluate')?.addEventListener('click', runEvaluation);
+
+async function runEvaluation() {
+  const sid = document.getElementById('preview-session').value;
+  if (!sid) return;
+  const btn = document.getElementById('btn-evaluate');
+  btn.disabled = true;
+  btn.textContent = '⏳ 評価中…';
+  const content = document.getElementById('eval-content');
+  content.innerHTML = '<p class="hint">計算中…</p>';
+  try {
+    const [evalRes, impRes] = await Promise.all([
+      fetch(`/api/session/evaluate?id=${sid}`).then(r => r.json()),
+      fetch(`/api/session/importance?id=${sid}`).then(r => r.json()),
+    ]);
+    content.innerHTML = '';
+    if (evalRes.ok) renderEvalResult(content, evalRes.data);
+    if (impRes.ok) renderFeatureImportance(content, impRes.data.feature_importances);
+  } catch (e) {
+    content.innerHTML = `<p style="color:var(--danger)">エラー: ${esc(e.message)}</p>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '📊 評価を実行';
+  }
+}
+
+function renderEvalResult(container, data) {
+  if (data.type === 'regression') {
+    const section = document.createElement('div');
+    section.className = 'eval-block';
+    section.innerHTML = `
+      <h4 class="eval-sub">回帰評価 &nbsp;<span class="badge-secondary">MAE: ${data.mae} &nbsp;|&nbsp; R²: ${data.r2}</span></h4>
+      <p class="hint">実測値 vs 予測値（検証データ）</p>
+      <canvas id="chart-scatter" width="400" height="280"></canvas>`;
+    container.appendChild(section);
+    setTimeout(() => drawScatter('chart-scatter', data.actuals, data.predictions), 50);
+  } else {
+    const section = document.createElement('div');
+    section.className = 'eval-block';
+    const acc = (data.accuracy * 100).toFixed(1);
+    section.innerHTML = `
+      <h4 class="eval-sub">分類評価 &nbsp;<span class="badge-secondary">精度: ${acc}%</span></h4>
+      <p class="hint">混同行列（縦軸: 正解, 横軸: 予測）</p>
+      <canvas id="chart-confusion" width="320" height="320"></canvas>`;
+    container.appendChild(section);
+    setTimeout(() => drawConfusionMatrix('chart-confusion', data.confusion_matrix), 50);
+  }
+}
+
+function renderFeatureImportance(container, importances) {
+  if (!importances?.length) return;
+  const section = document.createElement('div');
+  section.className = 'eval-block';
+  section.innerHTML = `
+    <h4 class="eval-sub">特徴重要度 <span class="hint-inline">（値が大きいほど予測への影響が大きい）</span></h4>
+    <div id="importance-bars" class="importance-bars"></div>`;
+  container.appendChild(section);
+  const bars = section.querySelector('#importance-bars');
+  const maxVal = importances[0]?.importance || 1;
+  importances.forEach(({ name, importance }) => {
+    const pct = maxVal > 0 ? (importance / maxVal * 100).toFixed(1) : 0;
+    const bar = document.createElement('div');
+    bar.className = 'imp-row';
+    bar.innerHTML = `
+      <span class="imp-name">${esc(name)}</span>
+      <div class="imp-bar-wrap">
+        <div class="imp-bar" style="width:${pct}%"></div>
+      </div>
+      <span class="imp-val">${(importance * 100).toFixed(1)}%</span>`;
+    bars.appendChild(bar);
+  });
+}
+
+function drawScatter(canvasId, actuals, predictions) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+  const W = canvas.offsetWidth || 400;
+  canvas.width = W;
+  const H = canvas.height;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#21262d';
+  ctx.fillRect(0, 0, W, H);
+
+  const pad = { top: 20, right: 20, bottom: 40, left: 50 };
+  const cw = W - pad.left - pad.right;
+  const ch = H - pad.top - pad.bottom;
+
+  const all = [...actuals, ...predictions];
+  const mn = Math.min(...all);
+  const mx = Math.max(...all);
+  const rng = mx - mn || 1;
+  const toX = v => pad.left + (v - mn) / rng * cw;
+  const toY = v => pad.top + (1 - (v - mn) / rng) * ch;
+
+  // Perfect prediction line
+  ctx.strokeStyle = '#444'; ctx.lineWidth = 1; ctx.setLineDash([4,4]);
+  ctx.beginPath(); ctx.moveTo(toX(mn), toY(mn)); ctx.lineTo(toX(mx), toY(mx)); ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Points
+  ctx.fillStyle = '#58a6ff';
+  actuals.forEach((a, i) => {
+    ctx.beginPath();
+    ctx.arc(toX(a), toY(predictions[i]), 3, 0, Math.PI * 2);
+    ctx.fill();
+  });
+
+  // Axes labels
+  ctx.fillStyle = '#8b949e'; ctx.font = '11px sans-serif';
+  ctx.textAlign = 'center'; ctx.fillText('実測値', pad.left + cw / 2, H - 4);
+  ctx.save(); ctx.translate(12, pad.top + ch / 2); ctx.rotate(-Math.PI / 2);
+  ctx.fillText('予測値', 0, 0); ctx.restore();
+}
+
+function drawConfusionMatrix(canvasId, matrix) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+  const n = matrix.length;
+  const W = canvas.width;
+  const H = canvas.height;
+  const pad = 30;
+  const cellW = (W - pad * 2) / n;
+  const cellH = (H - pad * 2) / n;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#21262d'; ctx.fillRect(0, 0, W, H);
+
+  const maxVal = Math.max(...matrix.flat());
+
+  for (let r = 0; r < n; r++) {
+    for (let c = 0; c < n; c++) {
+      const v = matrix[r][c];
+      const alpha = maxVal > 0 ? v / maxVal : 0;
+      const x = pad + c * cellW;
+      const y = pad + r * cellH;
+      ctx.fillStyle = r === c
+        ? `rgba(126,231,135,${0.15 + alpha * 0.75})`
+        : `rgba(248,81,73,${alpha * 0.7})`;
+      ctx.fillRect(x, y, cellW - 1, cellH - 1);
+      ctx.fillStyle = '#c9d1d9';
+      ctx.font = `bold ${Math.min(14, Math.floor(cellH * 0.4))}px monospace`;
+      ctx.textAlign = 'center';
+      ctx.fillText(v, x + cellW / 2, y + cellH / 2 + 5);
+    }
+  }
+
+  // Axis labels
+  ctx.fillStyle = '#8b949e'; ctx.font = '10px sans-serif'; ctx.textAlign = 'center';
+  for (let i = 0; i < n; i++) {
+    ctx.fillText(i, pad + i * cellW + cellW / 2, pad - 6);
+    ctx.fillText(i, pad - 10, pad + i * cellH + cellH / 2 + 4);
+  }
+}
+
+// Show evaluation section when a session is selected
+function maybeShowEvalSection(sid) {
+  const sec = document.getElementById('eval-section');
+  if (!sec) return;
+  if (sid && state.sessions[sid]?.status === 'done') {
+    sec.classList.remove('hidden');
+    // Reset content
+    document.getElementById('eval-content').innerHTML =
+      '<p class="hint">「評価を実行」ボタンを押すと、混同行列・特徴重要度などが表示されます。</p>';
+    document.getElementById('btn-evaluate').disabled = false;
+    document.getElementById('btn-evaluate').textContent = '📊 評価を実行';
+  } else {
+    sec.classList.add('hidden');
+  }
 }
 
 // ================================================================

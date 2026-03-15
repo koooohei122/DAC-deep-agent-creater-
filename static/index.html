@@ -53,6 +53,20 @@
 
     <!-- ===== TAB 1: Upload ===== -->
     <section id="tab-upload" class="tab-content active">
+
+      <!-- Sample quick-start banner -->
+      <div class="sample-banner">
+        <span class="sample-banner-label">🚀 まずはサンプルデータで試してみましょう！</span>
+        <div class="sample-btns">
+          <button class="btn btn-sample" id="btn-sample-house" title="住宅価格の回帰タスク">
+            🏠 住宅価格予測（回帰）
+          </button>
+          <button class="btn btn-sample" id="btn-sample-iris" title="花の種類の多クラス分類">
+            🌸 花の種類分類（分類）
+          </button>
+        </div>
+      </div>
+
       <div class="panel-grid">
 
         <!-- Upload card -->
@@ -65,8 +79,7 @@
               ファイルを選択
               <input type="file" id="file-input" accept=".csv" hidden>
             </label>
-            <p class="hint">対応形式: CSV (UTF-8, Shift-JIS) &nbsp;|&nbsp;
-              サンプル: <code>sample_data/house_price.csv</code></p>
+            <p class="hint">対応形式: CSV (UTF-8, Shift-JIS)</p>
           </div>
           <div id="upload-status" class="upload-status hidden"></div>
         </div>
@@ -101,6 +114,12 @@
         <div class="analysis-header">
           <h2 class="card-title">データ分析 &amp; AI向け編集アドバイス</h2>
           <div class="analysis-meta" id="analysis-meta"></div>
+        </div>
+
+        <div id="fix-bar" class="fix-bar hidden">
+          <span class="fix-bar-msg">データに問題が検出されました。自動修正しますか？</span>
+          <button id="btn-fix-all" class="btn btn-accent">✨ すべて自動修正する</button>
+          <span id="fix-status" class="fix-status"></span>
         </div>
 
         <div class="table-wrap">
@@ -319,6 +338,17 @@
         <div class="arch-vis">
           <h3 class="section-label">ネットワーク構造</h3>
           <canvas id="chart-arch" width="900" height="200"></canvas>
+        </div>
+
+        <!-- Evaluation section -->
+        <div id="eval-section" class="eval-section hidden">
+          <div class="eval-header">
+            <h3 class="section-label">モデル評価</h3>
+            <button id="btn-evaluate" class="btn btn-secondary btn-sm">📊 評価を実行</button>
+          </div>
+          <div id="eval-content" class="eval-content">
+            <p class="hint">「評価を実行」ボタンを押すと、混同行列・特徴重要度などが表示されます。</p>
+          </div>
         </div>
       </div>
     </section>

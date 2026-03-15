@@ -259,3 +259,140 @@ def analyze_and_advise(csv_text: str) -> dict:
         "high_priority": sum(1 for i in instructions if i["priority"] == "HIGH"),
         "instructions": instructions,
     }
+
+
+def apply_fixes(csv_text: str) -> tuple:
+    """
+    Apply automatic data transformations:
+    - Remove duplicate rows
+    - Fill missing numeric values with median
+    - Fill missing categorical values with mode
+    - Clip outliers using IQR method
+    - Min-Max normalize numeric columns with large range or outside [0,1]
+    - One-Hot encode categorical columns with 2-10 unique values
+
+    Returns (new_csv_text, transform_log)
+    """
+    headers, rows = _parse_csv(csv_text)
+    if not headers or not rows:
+        return csv_text, []
+
+    new_headers = list(headers)
+    new_rows = [dict(r) for r in rows]
+    log = []
+
+    # Step 1: Remove duplicate rows
+    seen = set()
+    unique_rows = []
+    dup_count = 0
+    for r in new_rows:
+        key = tuple(r.get(h, "") for h in new_headers)
+        if key in seen:
+            dup_count += 1
+        else:
+            seen.add(key)
+            unique_rows.append(r)
+    if dup_count > 0:
+        new_rows = unique_rows
+        log.append(f"重複行 {dup_count} 件を削除しました")
+
+    # Step 2: Process each column
+    cols_to_encode = []  # (col_name, sorted_unique_cats)
+    for col in list(new_headers):
+        st = _column_stats([r.get(col, "") for r in new_rows])
+        values = [r.get(col, "") for r in new_rows]
+
+        if st["is_numeric"]:
+            nums = sorted([float(v) for v in values if _try_float(v)[1]])
+
+            # Fill missing with median
+            if st["nulls"] > 0 and nums:
+                n = len(nums)
+                median = nums[n // 2] if n % 2 else (nums[n // 2 - 1] + nums[n // 2]) / 2
+                filled = 0
+                for r in new_rows:
+                    v = r.get(col, "")
+                    if v is None or str(v).strip() == "" or str(v).strip().lower() in ("nan", "null", "none", "na"):
+                        r[col] = str(median)
+                        filled += 1
+                log.append(f"「{col}」の欠損値 {filled} 件を中央値 {median:.4g} で補完しました")
+                nums = sorted([float(r[col]) for r in new_rows])
+
+            # IQR outlier clipping
+            if nums:
+                n = len(nums)
+                q1 = nums[n // 4]
+                q3 = nums[min(3 * n // 4, n - 1)]
+                iqr = q3 - q1
+                if iqr > 0:
+                    lower = q1 - 1.5 * iqr
+                    upper = q3 + 1.5 * iqr
+                    clipped = 0
+                    for r in new_rows:
+                        v, ok = _try_float(r.get(col, ""))
+                        if ok:
+                            if v < lower:
+                                r[col] = str(lower)
+                                clipped += 1
+                            elif v > upper:
+                                r[col] = str(upper)
+                                clipped += 1
+                    if clipped > 0:
+                        log.append(f"「{col}」の外れ値 {clipped} 件を IQR法でクリッピングしました")
+                    nums = [float(r[col]) for r in new_rows]
+
+            # Min-Max normalization
+            if nums:
+                mn = min(nums)
+                mx = max(nums)
+                rng = mx - mn
+                if rng > 1e-10 and (rng > 1000 or mx > 1 or mn < 0):
+                    for r in new_rows:
+                        v, ok = _try_float(r.get(col, ""))
+                        if ok:
+                            r[col] = str((v - mn) / rng)
+                    log.append(f"「{col}」を Min-Max 正規化しました [{mn:.4g}, {mx:.4g}] → [0, 1]")
+
+        else:
+            # Categorical: fill missing with mode
+            cats = [str(v).strip() for v in values
+                    if v is not None and str(v).strip() not in ("", "nan", "null", "none", "na")]
+            if st["nulls"] > 0 and cats:
+                from collections import Counter
+                mode_val = Counter(cats).most_common(1)[0][0]
+                filled = 0
+                for r in new_rows:
+                    v = r.get(col, "")
+                    if v is None or str(v).strip() == "" or str(v).strip().lower() in ("nan", "null", "none", "na"):
+                        r[col] = mode_val
+                        filled += 1
+                if filled > 0:
+                    log.append(f"「{col}」の欠損値 {filled} 件を最頻値 '{mode_val}' で補完しました")
+
+            # Queue for One-Hot encoding if 2-10 unique values
+            unique_cats = sorted(set(str(r.get(col, "")).strip() for r in new_rows))
+            if 2 <= len(unique_cats) <= 10:
+                cols_to_encode.append((col, unique_cats))
+
+    # Step 3: One-Hot encoding (must be done after all numeric processing)
+    for col, unique_cats in cols_to_encode:
+        if col not in new_headers:
+            continue
+        col_idx = new_headers.index(col)
+        new_col_names = [f"{col}_{cat}" for cat in unique_cats]
+        for r in new_rows:
+            v = str(r.get(col, "")).strip()
+            for cat in unique_cats:
+                r[f"{col}_{cat}"] = "1" if v == cat else "0"
+            del r[col]
+        new_headers = new_headers[:col_idx] + new_col_names + new_headers[col_idx + 1:]
+        log.append(f"「{col}」を One-Hot Encoding しました → {len(unique_cats)} 列")
+
+    # Generate new CSV text
+    out = io.StringIO()
+    writer = csv.DictWriter(out, fieldnames=new_headers)
+    writer.writeheader()
+    for r in new_rows:
+        writer.writerow({h: r.get(h, "") for h in new_headers})
+
+    return out.getvalue(), log

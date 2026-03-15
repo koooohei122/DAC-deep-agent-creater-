@@ -28,7 +28,7 @@ sys.path.insert(0, str(ROOT))
 
 from ai.network import NeuralNetwork
 from ai.matrix import Matrix
-from ai.data_editor import analyze_and_advise
+from ai.data_editor import analyze_and_advise, apply_fixes
 
 # ── Global state ─────────────────────────────────────────────────────────
 UPLOADS_DIR = ROOT / "uploads"
@@ -184,6 +184,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif path.startswith("/api/train/events"):
             sid = query.get("id", [None])[0]
             self._api_train_sse(sid)
+        elif path == "/api/sample":
+            name = query.get("name", ["house_price"])[0]
+            self._api_load_sample(name)
+        elif path == "/api/session/evaluate":
+            sid = query.get("id", [None])[0]
+            self._api_evaluate(sid)
+        elif path == "/api/session/importance":
+            sid = query.get("id", [None])[0]
+            self._api_feature_importance(sid)
         else:
             self._respond(404, "text/plain", b"Not found")
 
@@ -192,6 +201,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         if path == "/api/upload":
             self._api_upload()
+        elif path == "/api/dataset/fix":
+            self._api_fix_dataset()
         elif path == "/api/analyze":
             self._api_analyze()
         elif path == "/api/train/start":
@@ -238,6 +249,176 @@ class Handler(http.server.BaseHTTPRequestHandler):
             s, ct, b = _err("データセットが見つかりません"); self._respond(s, ct, b); return
         analysis = DATASETS[did]["analysis"]
         s, ct, b = _ok(analysis)
+        self._respond(s, ct, b)
+
+    def _api_fix_dataset(self):
+        body = _parse_body(self)
+        did = body.get("dataset_id")
+        if did not in DATASETS:
+            s, ct, b = _err("データセットが見つかりません"); self._respond(s, ct, b); return
+        src = DATASETS[did]
+        try:
+            with open(src["path"], encoding="utf-8-sig") as f:
+                csv_text = f.read()
+            new_csv, log = apply_fixes(csv_text)
+            # Save as new dataset
+            new_did = str(uuid.uuid4())[:8]
+            base = src["filename"].rsplit(".", 1)[0]
+            new_filename = f"{base}_fixed.csv"
+            save_path = UPLOADS_DIR / f"{new_did}_{new_filename}"
+            with open(save_path, "w", encoding="utf-8") as f:
+                f.write(new_csv)
+            analysis = analyze_and_advise(new_csv)
+            DATASETS[new_did] = {
+                "id": new_did,
+                "filename": new_filename,
+                "path": str(save_path),
+                "analysis": analysis,
+                "size": len(new_csv.encode()),
+            }
+            s, ct, b = _ok({
+                "new_dataset_id": new_did,
+                "filename": new_filename,
+                "analysis": analysis,
+                "log": log,
+            })
+        except Exception as e:
+            s, ct, b = _err(f"修正処理エラー: {e}")
+        self._respond(s, ct, b)
+
+    def _api_load_sample(self, name):
+        safe = {"house_price": "house_price.csv", "iris": "iris_numeric.csv"}
+        fname = safe.get(name)
+        if not fname:
+            s, ct, b = _err("サンプル名が無効です"); self._respond(s, ct, b); return
+        sample_path = ROOT / "sample_data" / fname
+        if not sample_path.exists():
+            s, ct, b = _err("サンプルファイルが見つかりません"); self._respond(s, ct, b); return
+        content = sample_path.read_bytes()
+        text = content.decode("utf-8-sig", errors="replace")
+        # Check if already loaded (same filename)
+        for ds in DATASETS.values():
+            if ds["filename"] == fname:
+                s, ct, b = _ok({"dataset_id": ds["id"], "filename": fname, "analysis": ds["analysis"]})
+                self._respond(s, ct, b); return
+        did = str(uuid.uuid4())[:8]
+        save_path = UPLOADS_DIR / f"{did}_{fname}"
+        with open(save_path, "wb") as f:
+            f.write(content)
+        analysis = analyze_and_advise(text)
+        DATASETS[did] = {
+            "id": did,
+            "filename": fname,
+            "path": str(save_path),
+            "analysis": analysis,
+            "size": len(content),
+        }
+        s, ct, b = _ok({"dataset_id": did, "filename": fname, "analysis": analysis})
+        self._respond(s, ct, b)
+
+    def _api_evaluate(self, sid):
+        with SESSIONS_LOCK:
+            sess = SESSIONS.get(sid)
+        if not sess:
+            s, ct, b = _err("セッションが見つかりません"); self._respond(s, ct, b); return
+        Xv = sess.get("Xv")
+        yv = sess.get("yv")
+        if Xv is None or yv is None:
+            s, ct, b = _err("検証データがありません"); self._respond(s, ct, b); return
+        try:
+            nn = sess["model"]
+            pred = nn.predict(Xv)
+            cfg = sess["config"]
+            last_act = cfg["layers"][-1]["activation"] if cfg.get("layers") else "linear"
+            actuals_flat  = [row[0] for row in yv.data]
+            preds_flat    = [row[0] for row in pred.data]
+
+            if last_act == "softmax":
+                # Multiclass: argmax
+                pred_classes   = [p_row.index(max(p_row)) for p_row in pred.data]
+                actual_classes = [int(round(a)) for a in actuals_flat]
+                n_classes = max(max(pred_classes), max(actual_classes)) + 1
+                matrix = [[0]*n_classes for _ in range(n_classes)]
+                for a, p in zip(actual_classes, pred_classes):
+                    if 0 <= a < n_classes and 0 <= p < n_classes:
+                        matrix[a][p] += 1
+                correct = sum(1 for a, p in zip(actual_classes, pred_classes) if a == p)
+                acc = correct / max(len(actual_classes), 1)
+                result = {"type": "classification", "confusion_matrix": matrix,
+                          "accuracy": round(acc, 4), "n_classes": n_classes}
+            elif last_act == "sigmoid":
+                # Binary classification
+                pred_classes   = [1 if v >= 0.5 else 0 for v in preds_flat]
+                actual_classes = [int(round(a)) for a in actuals_flat]
+                matrix = [[0,0],[0,0]]
+                for a, p in zip(actual_classes, pred_classes):
+                    if a in (0,1) and p in (0,1):
+                        matrix[a][p] += 1
+                correct = sum(1 for a, p in zip(actual_classes, pred_classes) if a == p)
+                acc = correct / max(len(actual_classes), 1)
+                result = {"type": "binary", "confusion_matrix": matrix,
+                          "accuracy": round(acc, 4), "n_classes": 2}
+            else:
+                # Regression: actual vs predicted
+                mae = sum(abs(a - p) for a, p in zip(actuals_flat, preds_flat)) / max(len(actuals_flat), 1)
+                ss_res = sum((a - p)**2 for a, p in zip(actuals_flat, preds_flat))
+                mean_a = sum(actuals_flat) / max(len(actuals_flat), 1)
+                ss_tot = sum((a - mean_a)**2 for a in actuals_flat)
+                r2 = 1 - ss_res / ss_tot if ss_tot > 1e-10 else 0.0
+                result = {
+                    "type": "regression",
+                    "actuals":     [round(v, 4) for v in actuals_flat[:200]],
+                    "predictions": [round(v, 4) for v in preds_flat[:200]],
+                    "mae": round(mae, 4),
+                    "r2":  round(r2, 4),
+                }
+            s, ct, b = _ok(result)
+        except Exception as e:
+            s, ct, b = _err(str(e))
+        self._respond(s, ct, b)
+
+    def _api_feature_importance(self, sid):
+        with SESSIONS_LOCK:
+            sess = SESSIONS.get(sid)
+        if not sess:
+            s, ct, b = _err("セッションが見つかりません"); self._respond(s, ct, b); return
+        Xv = sess.get("Xv")
+        yv = sess.get("yv")
+        feature_cols = sess.get("feature_cols", [])
+        if Xv is None or yv is None:
+            s, ct, b = _err("検証データがありません"); self._respond(s, ct, b); return
+        try:
+            import random as _random
+            nn = sess["model"]
+
+            def _mse(pred, actual):
+                total = sum(
+                    (p - a) ** 2
+                    for p_row, a_row in zip(pred.data, actual.data)
+                    for p, a in zip(p_row, a_row)
+                )
+                return total / max(len(pred.data), 1)
+
+            baseline_loss = _mse(nn.predict(Xv), yv)
+            importances = []
+            for i, fname in enumerate(feature_cols):
+                shuffled = [row[:] for row in Xv.data]
+                col_vals = [row[i] for row in shuffled]
+                _random.shuffle(col_vals)
+                for j, row in enumerate(shuffled):
+                    row[i] = col_vals[j]
+                Xv_sh = Matrix.from_2d(shuffled)
+                sh_loss = _mse(nn.predict(Xv_sh), yv)
+                importances.append({"name": fname, "importance": max(0.0, sh_loss - baseline_loss)})
+
+            total = sum(x["importance"] for x in importances)
+            if total > 1e-10:
+                for x in importances:
+                    x["importance"] = round(x["importance"] / total, 4)
+            importances.sort(key=lambda x: -x["importance"])
+            s, ct, b = _ok({"feature_importances": importances})
+        except Exception as e:
+            s, ct, b = _err(str(e))
         self._respond(s, ct, b)
 
     def _api_dataset_preview(self, did):
@@ -345,7 +526,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # Load data
         all_mat, all_headers = _load_csv(ds_path)
         if all_mat is None:
-            s, ct, b = _err("数値データが読み込めません"); self._respond(s, ct, b); return
+            s, ct, b = _err(
+                "数値データが読み込めません。文字列列が含まれている場合は「データ」タブの"
+                "「✨ すべて自動修正する」ボタンでデータを変換してから再試行してください。"
+            ); self._respond(s, ct, b); return
+
+        # Pre-training validation
+        if all_mat.rows < 10:
+            s, ct, b = _err(
+                f"データが少なすぎます（{all_mat.rows} 行）。最低 10 行以上必要です。"
+            ); self._respond(s, ct, b); return
 
         try:
             t_idx = all_headers.index(target_col)
@@ -355,6 +545,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         feat_idx = [i for i in range(len(all_headers)) if i != t_idx]
         X = Matrix.from_2d([[row[i] for i in feat_idx] for row in all_mat.data])
         y = Matrix.from_2d([[row[t_idx]] for row in all_mat.data])
+
+        # Check target is not constant
+        y_vals = [row[0] for row in y.data]
+        if len(set(y_vals)) < 2:
+            s, ct, b = _err(
+                f"目的変数「{target_col}」の値がすべて同じです。別の列を選択してください。"
+            ); self._respond(s, ct, b); return
 
         in_size = X.cols
         out_size = y.cols
@@ -395,6 +592,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         nn = NeuralNetwork(nn_config)
 
         sid = str(uuid.uuid4())[:8]
+        # Split before storing so Xv/yv are available for evaluation
+        Xtr, ytr, Xv, yv = _split(X, y)
+
         with SESSIONS_LOCK:
             SESSIONS[sid] = {
                 "model": nn,
@@ -403,11 +603,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "dataset_id": did,
                 "target_col": target_col,
                 "feature_cols": [all_headers[i] for i in feat_idx],
+                "Xv": Xv,
+                "yv": yv,
             }
             TRAIN_EVENTS[sid] = []
-
-        # Train in background thread
-        Xtr, ytr, Xv, yv = _split(X, y)
 
         def _callback(epoch, loss, val_loss, acc):
             evt = {

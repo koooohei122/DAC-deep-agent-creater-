@@ -571,6 +571,91 @@ canvas { display: block; max-width: 100%; }
 .explain-right-card { min-height: 320px; }
 
 /* ============================================================
+   Sample banner (quick-start)
+   ============================================================ */
+.sample-banner {
+  display: flex; align-items: center; flex-wrap: wrap; gap: .75rem;
+  background: linear-gradient(135deg, rgba(88,166,255,.1), rgba(126,231,135,.08));
+  border: 1px solid rgba(88,166,255,.3);
+  border-radius: var(--radius);
+  padding: .75rem 1.25rem;
+  margin-bottom: 1.25rem;
+}
+.sample-banner-label { font-size: .9rem; font-weight: 600; color: var(--accent); flex-shrink: 0; }
+.sample-btns { display: flex; gap: .5rem; flex-wrap: wrap; }
+.btn-sample {
+  background: var(--bg3); border: 1px solid var(--border);
+  color: var(--text); padding: .4rem .9rem; border-radius: 6px;
+  font-size: .85rem; cursor: pointer; transition: all .15s;
+}
+.btn-sample:hover { border-color: var(--accent); color: var(--accent); }
+
+/* ============================================================
+   Fix bar
+   ============================================================ */
+.fix-bar {
+  display: flex; align-items: center; flex-wrap: wrap; gap: .75rem;
+  background: rgba(210,153,34,.08);
+  border: 1px solid rgba(210,153,34,.35);
+  border-radius: 8px;
+  padding: .65rem 1rem;
+  margin-bottom: 1rem;
+}
+.fix-bar-msg { font-size: .875rem; color: var(--warn); flex: 1; }
+.btn-accent {
+  background: linear-gradient(135deg, #58a6ff, #7ee787);
+  color: #0d1117; border: none;
+  padding: .4rem 1rem; border-radius: 6px;
+  font-weight: 600; font-size: .85rem; cursor: pointer;
+  transition: opacity .15s;
+}
+.btn-accent:hover { opacity: .88; }
+.btn-accent:disabled { opacity: .4; cursor: not-allowed; }
+.fix-status { font-size: .82rem; }
+.fix-status.success { color: var(--accent2); }
+.fix-status.error   { color: var(--danger); }
+
+/* Fix log card */
+.fix-log-card {
+  background: rgba(126,231,135,.07);
+  border: 1px solid rgba(126,231,135,.2);
+  border-radius: 8px;
+  padding: .75rem 1rem;
+  margin-bottom: .75rem;
+  font-size: .82rem;
+}
+.fix-log-card ul { padding-left: 1.2rem; margin-top: .4rem; }
+.fix-log-card li { margin-bottom: .2rem; color: var(--text2); }
+
+/* ============================================================
+   Evaluation section (Preview tab)
+   ============================================================ */
+.eval-section { margin-top: 1.5rem; border-top: 1px solid var(--border); padding-top: 1.25rem; }
+.eval-header { display: flex; align-items: center; gap: 1rem; margin-bottom: .75rem; }
+.eval-content { display: flex; flex-wrap: wrap; gap: 1.5rem; }
+.eval-block { min-width: 280px; flex: 1; }
+.eval-sub {
+  font-size: .9rem; font-weight: 600; margin-bottom: .5rem;
+  display: flex; align-items: center; gap: .5rem; flex-wrap: wrap;
+}
+.badge-secondary {
+  background: var(--bg3); border: 1px solid var(--border);
+  border-radius: 6px; padding: .15rem .55rem;
+  font-size: .75rem; font-weight: 400; color: var(--text2);
+}
+.hint-inline { font-size: .75rem; font-weight: 400; color: var(--text3); }
+
+/* Feature importance bars */
+.importance-bars { display: flex; flex-direction: column; gap: .35rem; margin-top: .5rem; }
+.imp-row { display: flex; align-items: center; gap: .5rem; font-size: .82rem; }
+.imp-name { min-width: 100px; max-width: 140px; overflow: hidden; text-overflow: ellipsis;
+            white-space: nowrap; color: var(--text); }
+.imp-bar-wrap { flex: 1; background: var(--bg3); border-radius: 3px; height: 10px; overflow: hidden; }
+.imp-bar { height: 100%; background: linear-gradient(90deg, #58a6ff, #7ee787); border-radius: 3px;
+           transition: width .4s ease; }
+.imp-val { min-width: 40px; text-align: right; color: var(--text2); }
+
+/* ============================================================
    Utility
    ============================================================ */
 .empty-hint { color: var(--text3); font-size: .875rem; padding: .5rem 0; }
